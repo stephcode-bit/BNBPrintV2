@@ -1,0 +1,238 @@
+"""
+Entry point for the $0/month deployment path: a scheduled GitHub Actions
+job (see .github/workflows/scanner.yml) runs this script instead of an
+always-on Railway/Render process.
+
+What it does, once per invocation:
+  1. Loads the last snapshot from Upstash Redis (so state survives across
+     scheduled restarts).
+  2. Loops for up to SCAN_LOOP_BUDGET_SECONDS (default 5h45m), polling for
+     new bonding-curve tokens + refreshing already-tracked ones, on
+     SCAN_POLL_INTERVAL_SECONDS cadence (default 15s).
+  3. Writes the updated snapshot + stats back to Upstash on every cycle,
+     and sends Web Push for newly-flagged runners.
+  4. Exits cleanly when the time budget runs out, so the *next* scheduled
+     job (see the workflow's cron — every 5h, comfortably inside this
+     job's 5h45m budget) can pick up without a gap in coverage.
+
+Why polling instead of the WebSocket subscription app/services/chain_
+listener.run_listener() uses: a GitHub Actions runner isn't a great place
+to hold one raw WSS connection open for 5+ hours (CI network egress can be
+less stable than a real host), and HTTPS polling is trivial to make
+resilient — one bad request just gets retried on the next tick instead of
+tearing down a whole subscription. The trade-off, stated plainly: detection
+latency is bounded by SCAN_POLL_INTERVAL_SECONDS instead of being instant.
+At the default 15s, plus the frontend's own ~15-20s poll, worst case is
+roughly 30-40s from on-chain event to your screen — not instant, but not
+the 5-minute+ delay a bare cron-only setup would give you either.
+
+Run locally with:  cd backend && python scan_runner.py
+(needs the same .env as the FastAPI app, plus UPSTASH_REDIS_REST_URL/TOKEN)
+"""
+import asyncio
+import logging
+import random
+import time
+
+from app.config import get_settings
+from app.services import chain_listener, push_runner, store
+from app.services.chain_listener import (
+    _demo_symbol,
+    _random_address,
+    process_token_pipeline,
+)
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger("bnbprint.scan_runner")
+settings = get_settings()
+
+_last_seen_block: dict[str, int] = {}  # per-w3-connection cursor, live mode only
+
+
+async def _demo_tick() -> list[dict]:
+    """~40% chance per tick of a new synthetic token — DEMO_MODE only."""
+    if random.random() > 0.4:
+        return []
+    from datetime import datetime, timezone
+
+    symbol, name = _demo_symbol()
+    platform = random.choice(chain_listener.DEMO_PLATFORMS)
+    return [{
+        "address": _random_address(),
+        "symbol": symbol,
+        "name": name,
+        "decimals": 18,
+        "pair_address": _random_address() if platform == "pancakeswap_v2" else None,
+        "factory": platform,
+        "dex": "pancakeswap_v2" if platform == "pancakeswap_v2" else None,
+        "bonding_platform": None if platform == "pancakeswap_v2" else platform,
+        "creation_block": random.randint(40_000_000, 41_000_000),
+        "creation_timestamp": datetime.now(timezone.utc),
+    }]
+
+
+async def _live_tick() -> list[dict]:
+    """
+    Polls configured bonding-curve + PancakeSwap factory addresses for new
+    logs since the last checked block via HTTPS eth_getLogs.
+
+    NOTE: this detects *that* a factory emitted a log — turning that into
+    a full token dict still needs each platform's verified ABI to decode
+    (same caveat as app/services/bonding.py's CURVE_ABI TODOs). Fill in
+    the ABI + decoder here once you've confirmed it on BscScan; until
+    then this logs activity so you can see live mode is actually
+    connected, without inventing token data it can't verify.
+    """
+    from app.services.security_checks import get_web3
+
+    w3 = get_web3()
+    if w3 is None:
+        return []
+
+    try:
+        latest = w3.eth.block_number
+    except Exception:
+        logger.warning("live poll: RPC call failed this tick")
+        return []
+
+    from_block = _last_seen_block.get("cursor", latest - 5)
+    if latest <= from_block:
+        return []
+
+    addresses = [a for a in (
+        [settings.pancakeswap_v2_factory, settings.pancakeswap_v3_factory]
+        + list(settings.bonding_factories.values())
+    ) if a]
+
+    try:
+        logs = w3.eth.get_logs({"fromBlock": from_block + 1, "toBlock": latest, "address": addresses})
+        if logs:
+            logger.info("live poll: %d new factory log(s) in blocks %d-%d (decode pending verified ABI)", len(logs), from_block + 1, latest)
+    except Exception:
+        logger.warning("live poll: eth_getLogs failed this tick")
+    finally:
+        _last_seen_block["cursor"] = latest
+
+    return []  # see NOTE above — no decoder wired in yet
+
+
+def _compute_stats(known: dict[str, dict]) -> dict:
+    from datetime import datetime, timedelta, timezone
+
+    tokens = list(known.values())
+    total = len(tokens)
+    bonding = sum(1 for t in tokens if t.get("is_bonding"))
+    since = datetime.now(timezone.utc) - timedelta(hours=24)
+
+    def _created_recently(t: dict) -> bool:
+        ts = t.get("creation_timestamp")
+        if isinstance(ts, str):
+            try:
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            except ValueError:
+                return False
+        return bool(ts and ts >= since)
+
+    runners_24h = sum(1 for t in tokens if t.get("is_runner") and _created_recently(t))
+    avg_security = sum(t.get("security_score", 0) for t in tokens) / total if total else 0.0
+    last_token_at = max((t.get("creation_timestamp") for t in tokens), default=None)
+
+    return {
+        "total_tokens": total,
+        "bonding_tokens": bonding,
+        "migrated_tokens": total - bonding,
+        "runners_24h": runners_24h,
+        "avg_security_score": round(avg_security, 1),
+        "last_token_at": last_token_at,
+    }
+
+
+async def _handle_discovered(raw: dict, known: dict[str, dict], notified: set[str]) -> None:
+    try:
+        enriched = await process_token_pipeline(raw)
+    except Exception:
+        logger.exception("pipeline failed for %s", raw.get("address"))
+        return
+
+    address = enriched["address"]
+    was_runner = known.get(address, {}).get("is_runner", False)
+    known[address] = enriched
+
+    alert_type = "runner" if enriched["is_runner"] else "new_token"
+    message = (
+        f"🚀 {enriched['symbol']} flagged as a likely runner ({enriched['runner_score']:.0f}/100)"
+        if enriched["is_runner"]
+        else f"New token detected: {enriched['symbol']} on {enriched.get('bonding_platform') or enriched.get('dex') or 'DEX'}"
+    )
+    await store.append_alert({"token_address": address, "alert_type": alert_type, "message": message})
+
+    if enriched["is_runner"] and not was_runner and address not in notified:
+        notified.add(address)
+        await push_runner.notify_all(
+            title=f"🚀 Runner: {enriched['symbol']}",
+            body=f"Runner score {enriched['runner_score']:.0f}/100 · security {enriched['security_score']:.0f}/100",
+            url=f"/token/{address}",
+        )
+
+
+async def _refresh_bonding(known: dict[str, dict]) -> None:
+    bonding_addrs = [a for a, t in known.items() if t.get("is_bonding")][:50]
+    for address in bonding_addrs:
+        row = known[address]
+        token_dict = {
+            "address": row["address"],
+            "symbol": row["symbol"],
+            "name": row["name"],
+            "decimals": row["decimals"],
+            "pair_address": row.get("pair_address"),
+            "factory": row.get("factory"),
+            "dex": row.get("dex"),
+            "bonding_platform": row.get("bonding_platform"),
+            "creation_block": row.get("creation_block"),
+            "creation_timestamp": row["creation_timestamp"],
+        }
+        try:
+            enriched = await process_token_pipeline(token_dict)
+        except Exception:
+            logger.exception("refresh failed for %s", address)
+            continue
+        known[address] = enriched
+
+
+async def main() -> None:
+    logger.info(
+        "scan_runner starting (demo_mode=%s, poll_interval=%ds, budget=%ds)",
+        settings.demo_mode, settings.scan_poll_interval_seconds, settings.scan_loop_budget_seconds,
+    )
+
+    snapshot = await store.get_snapshot()
+    known: dict[str, dict] = {t["address"]: t for t in snapshot if t.get("address")}
+    notified: set[str] = {a for a, t in known.items() if t.get("is_runner")}
+    logger.info("resumed with %d known tokens from previous snapshot", len(known))
+
+    start = time.monotonic()
+    last_refresh = 0.0
+
+    while time.monotonic() - start < settings.scan_loop_budget_seconds:
+        cycle_start = time.monotonic()
+
+        new_raws = await (_demo_tick() if settings.demo_mode else _live_tick())
+        for raw in new_raws:
+            if raw["address"] not in known:
+                await _handle_discovered(raw, known, notified)
+
+        if cycle_start - last_refresh >= settings.bonding_refresh_interval:
+            await _refresh_bonding(known)
+            last_refresh = cycle_start
+
+        await store.save_snapshot(list(known.values()))
+        await store.save_stats(_compute_stats(known))
+
+        elapsed = time.monotonic() - cycle_start
+        await asyncio.sleep(max(1.0, settings.scan_poll_interval_seconds - elapsed))
+
+    logger.info("time budget exhausted after %d tokens tracked — exiting for the next scheduled run", len(known))
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

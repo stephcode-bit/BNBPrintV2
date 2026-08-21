@@ -1,0 +1,38 @@
+# Convenience for local development: Postgres + the FastAPI backend.
+# Run: docker compose up --build
+# Then run the frontend separately with `npm run dev` in frontend/.
+version: "3.9"
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: bnbprint
+    ports:
+      - "5432:5432"
+    volumes:
+      - bnbprint_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://postgres:postgres@db:5432/bnbprint
+      DEMO_MODE: "true"
+      CORS_ORIGINS: "http://localhost:3000"
+    ports:
+      - "8000:8000"
+
+volumes:
+  bnbprint_pg_data:
