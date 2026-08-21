@@ -1,0 +1,48 @@
+name: BNBPRINT Scanner
+
+on:
+  schedule:
+    - cron: "0 */5 * * *" # every 5 hours — see the note in README.md §2
+  workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
+
+concurrency:
+  group: bnbprint-scanner
+  cancel-in-progress: false # let an overlapping run finish naturally rather than killing it
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355 # just under GitHub's 360-minute hard cap per job
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: backend/requirements.txt
+
+      - run: pip install -r requirements.txt
+
+      - name: Run scanner
+        run: python scan_runner.py
+        env:
+          DEMO_MODE: ${{ vars.DEMO_MODE || 'true' }}
+          RPC_HTTPS_URL: ${{ secrets.RPC_HTTPS_URL }}
+          CHAIN_ID: "56"
+          FOUR_MEME_FACTORY: ${{ vars.FOUR_MEME_FACTORY }}
+          GRAFUN_FACTORY: ${{ vars.GRAFUN_FACTORY }}
+          EXTRA_BONDING_FACTORIES: ${{ vars.EXTRA_BONDING_FACTORIES }}
+          GOPLUS_APP_KEY: ${{ secrets.GOPLUS_APP_KEY }}
+          GOPLUS_APP_SECRET: ${{ secrets.GOPLUS_APP_SECRET }}
+          AVE_AI_API_KEY: ${{ secrets.AVE_AI_API_KEY }}
+          VAPID_PUBLIC_KEY: ${{ secrets.VAPID_PUBLIC_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          VAPID_SUBJECT: ${{ vars.VAPID_SUBJECT || 'mailto:you@example.com' }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          RUNNER_SCORE_THRESHOLD: ${{ vars.RUNNER_SCORE_THRESHOLD || '70' }}
+          MIN_SECURITY_SCORE: ${{ vars.MIN_SECURITY_SCORE || '50' }}
