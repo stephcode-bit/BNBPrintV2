@@ -1,8 +1,26 @@
 name: BNBPRINT Scanner
 
+# Replaces an always-on Railway/Render process with a free, scheduled one.
+#
+# How this stays "near real-time" for $0/month: each run doesn't just do
+# one quick check and exit — it loops internally for up to ~5h45m (see
+# SCAN_LOOP_BUDGET_SECONDS in backend/scan_runner.py), polling every ~15s.
+# The `schedule` trigger below just needs to fire a fresh run every 5h as a
+# safety net *before* the previous run's internal budget expires, so there's
+# always an overlapping run in flight and no real gap in coverage. Standard
+# GitHub-hosted runners are free with no time limit on public repositories,
+# so running near-continuously like this costs nothing.
+#
+# Required repo secrets (Settings -> Secrets and variables -> Actions):
+#   UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN   (from upstash.com, free)
+#   RPC_HTTPS_URL                                       (only needed once DEMO_MODE=false)
+#   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY                 (optional — enables push)
+#   GOPLUS_APP_KEY, GOPLUS_APP_SECRET                   (optional — higher rate limit)
+# See backend/.env.example for the full list and how to get each one.
+
 on:
   schedule:
-    - cron: "0 */5 * * *" # every 5 hours — see the note in README.md §2
+    - cron: "0 */5 * * *" # every 5 hours — see the note above on why this is safe
   workflow_dispatch: {} # lets you trigger a run manually from the Actions tab
 
 concurrency:
@@ -33,8 +51,8 @@ jobs:
           DEMO_MODE: ${{ vars.DEMO_MODE || 'true' }}
           RPC_HTTPS_URL: ${{ secrets.RPC_HTTPS_URL }}
           CHAIN_ID: "56"
-          FOUR_MEME_FACTORY: ${{ vars.FOUR_MEME_FACTORY }}
-          GRAFUN_FACTORY: ${{ vars.GRAFUN_FACTORY }}
+          FOUR_MEME_FACTORY: ${{ vars.FOUR_MEME_FACTORY || '0x5c952063c7fc8610FFDB798152D69F0B9550762b' }}
+          GRAFUN_FACTORY: ${{ vars.GRAFUN_FACTORY || '0x8341b19a2A602eAE0f22633b6da12E1B016E6451' }}
           EXTRA_BONDING_FACTORIES: ${{ vars.EXTRA_BONDING_FACTORIES }}
           GOPLUS_APP_KEY: ${{ secrets.GOPLUS_APP_KEY }}
           GOPLUS_APP_SECRET: ${{ secrets.GOPLUS_APP_SECRET }}
