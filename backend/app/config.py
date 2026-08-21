@@ -37,11 +37,14 @@ class Settings(BaseSettings):
     goplus_app_key: str = ""
     goplus_app_secret: str = ""
 
-    # Factories
+    # Factories — four_meme_factory and grafun_factory default to real,
+    # verified addresses (not placeholders) so DEMO_MODE=false works
+    # without extra setup; see backend/.env.example and
+    # app/services/four_meme.py for how each was confirmed.
     pancakeswap_v2_factory: str = "0xcA143Ce32Fe78f1f7019d7d551a6402fC5350c73"
     pancakeswap_v3_factory: str = "0x0BFbCF9fa4f9C56B0F40a671Ad40E0805A091865"
-    four_meme_factory: str = ""
-    grafun_factory: str = ""
+    four_meme_factory: str = "0x5c952063c7fc8610FFDB798152D69F0B9550762b"
+    grafun_factory: str = "0x8341b19a2A602eAE0f22633b6da12E1B016E6451"
     extra_bonding_factories: str = ""
 
     # Scoring
