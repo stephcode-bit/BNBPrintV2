@@ -232,6 +232,21 @@ async def main() -> None:
         "scan_runner starting (demo_mode=%s, poll_interval=%ds, budget=%ds)",
         settings.demo_mode, settings.scan_poll_interval_seconds, settings.scan_loop_budget_seconds,
     )
+    # One-time diagnostic: reveals the *shape* of the Upstash URL secret
+    # (length, whether it starts with https://, and a short repr of its
+    # head/tail) without ever logging the token or the full URL, so a
+    # stray quote mark, leading space, or swapped URL/TOKEN value shows up
+    # here instead of us guessing blind from a generic httpx error.
+    _url = settings.upstash_redis_rest_url
+    _token = settings.upstash_redis_rest_token
+    logger.info(
+        "Upstash URL diagnostic: set=%s len=%d starts_with_https=%s head=%r tail=%r",
+        bool(_url), len(_url), _url.startswith("https://"), _url[:12], _url[-6:] if _url else "",
+    )
+    logger.info(
+        "Upstash TOKEN diagnostic: set=%s len=%d head=%r",
+        bool(_token), len(_token), _token[:6] if _token else "",
+    )
 
     snapshot = await store.get_snapshot()
     known: dict[str, dict] = {t["address"]: t for t in snapshot if t.get("address")}
