@@ -73,16 +73,21 @@ async def _demo_tick() -> list[dict]:
 
 async def _live_tick() -> list[dict]:
     """
-    Polls configured bonding-curve + PancakeSwap factory addresses for new
-    logs since the last checked block via HTTPS eth_getLogs.
+    Polls for new tokens since the last checked block via HTTPS.
 
-    NOTE: this detects *that* a factory emitted a log — turning that into
-    a full token dict still needs each platform's verified ABI to decode
-    (same caveat as app/services/bonding.py's CURVE_ABI TODOs). Fill in
-    the ABI + decoder here once you've confirmed it on BscScan; until
-    then this logs activity so you can see live mode is actually
-    connected, without inventing token data it can't verify.
+    four.meme's TokenManager2 is fully decoded — see
+    app/services/four_meme.py for how that contract address + the
+    TokenCreate event ABI were verified (two independent, cross-confirming
+    sources, not a guess). Any other configured factory (GraFun,
+    EXTRA_BONDING_FACTORIES) still only gets its raw logs counted/logged
+    rather than decoded into a token dict, since their token-creation
+    event ABIs aren't confirmed yet — see app/services/bonding.py's
+    GraFunReader docstring for the specific gap and how to close it the
+    same way four.meme's was closed.
     """
+    from datetime import datetime, timezone
+
+    from app.services import four_meme
     from app.services.security_checks import get_web3
 
     w3 = get_web3()
@@ -99,21 +104,44 @@ async def _live_tick() -> list[dict]:
     if latest <= from_block:
         return []
 
-    addresses = [a for a in (
-        [settings.pancakeswap_v2_factory, settings.pancakeswap_v3_factory]
-        + list(settings.bonding_factories.values())
-    ) if a]
+    discovered: list[dict] = []
 
-    try:
-        logs = w3.eth.get_logs({"fromBlock": from_block + 1, "toBlock": latest, "address": addresses})
-        if logs:
-            logger.info("live poll: %d new factory log(s) in blocks %d-%d (decode pending verified ABI)", len(logs), from_block + 1, latest)
-    except Exception:
-        logger.warning("live poll: eth_getLogs failed this tick")
-    finally:
-        _last_seen_block["cursor"] = latest
+    configured_four_meme = settings.bonding_factories.get("four.meme")
+    if configured_four_meme and configured_four_meme.lower() == four_meme.TOKEN_MANAGER2.lower():
+        try:
+            contract = w3.eth.contract(address=four_meme.TOKEN_MANAGER2, abi=four_meme.EVENT_ABI)
+            events = contract.events.TokenCreate().get_logs(from_block=from_block + 1, to_block=latest)
+            for ev in events:
+                args = ev["args"]
+                discovered.append({
+                    "address": args["token"],
+                    "symbol": args["symbol"][:32] if args["symbol"] else "",
+                    "name": args["name"][:128] if args["name"] else "",
+                    "decimals": 18,
+                    "pair_address": None,
+                    "factory": "four.meme",
+                    "dex": None,
+                    "bonding_platform": "four.meme",
+                    "creation_block": ev["blockNumber"],
+                    "creation_timestamp": datetime.fromtimestamp(args["launchTime"], tz=timezone.utc),
+                })
+            if events:
+                logger.info("live poll: %d new four.meme token(s) decoded", len(events))
+        except Exception:
+            logger.warning("live poll: four.meme TokenCreate decode failed this tick", exc_info=True)
 
-    return []  # see NOTE above — no decoder wired in yet
+    other_addresses = [a for name, a in settings.bonding_factories.items() if name != "four.meme"]
+    other_addresses += [a for a in (settings.pancakeswap_v2_factory, settings.pancakeswap_v3_factory) if a]
+    if other_addresses:
+        try:
+            logs = w3.eth.get_logs({"fromBlock": from_block + 1, "toBlock": latest, "address": other_addresses})
+            if logs:
+                logger.info("live poll: %d log(s) from other configured factories (decode pending, see docstring)", len(logs))
+        except Exception:
+            logger.warning("live poll: eth_getLogs failed for other factories this tick")
+
+    _last_seen_block["cursor"] = latest
+    return discovered
 
 
 def _compute_stats(known: dict[str, dict]) -> dict:
