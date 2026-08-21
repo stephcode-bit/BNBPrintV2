@@ -46,39 +46,68 @@ class BondingReader(ABC):
 
 class FourMemeReader(BondingReader):
     """
-    four.meme bonding curves track BNB raised vs. a fixed target (public
-    docs have historically cited ~24 BNB to complete a curve, subject to
-    change — confirm current parameters before relying on this).
+    Real implementation — calls TokenManagerHelper3.getTokenInfo(token) on
+    BSC, which four.meme provides specifically for reading bonding-curve
+    state regardless of which TokenManager version the token uses. See
+    app/services/four_meme.py's docstring for how this contract address
+    and ABI were verified (two independent, cross-confirming sources).
 
-    TODO: replace `CURVE_ABI` with the verified ABI from the deployed
-    four.meme curve/factory contract and implement the real call below.
+    Progress is `funds / maxFunds` — `funds` is the BNB raised so far
+    toward the curve's target (`maxFunds`); `liquidityAdded` flips to
+    True the instant the curve completes and migrates to the DEX, which
+    maps directly onto `is_bonding`.
     """
 
     platform_name = "four.meme"
-    CURVE_ABI: list = []  # fill in once verified
 
     def read(self, w3: Web3, token_address: str) -> Optional[BondingStatus]:
-        if not self.CURVE_ABI:
-            logger.debug("FourMemeReader: ABI not configured, skipping on-chain read")
+        from app.services import four_meme
+
+        try:
+            contract = w3.eth.contract(address=four_meme.HELPER3, abi=four_meme.HELPER_ABI)
+            info = contract.functions.getTokenInfo(Web3.to_checksum_address(token_address)).call()
+            # version, tokenManager, quote, lastPrice, tradingFeeRate,
+            # minTradingFee, launchTime, offers, maxOffers, funds, maxFunds, liquidityAdded
+            funds, max_funds, liquidity_added = info[9], info[10], info[11]
+            progress = min(100.0, (funds / max_funds) * 100) if max_funds else 0.0
+            return BondingStatus(
+                platform=self.platform_name,
+                progress_pct=progress,
+                is_bonding=not liquidity_added,
+                raised_bnb=funds / 1e18,
+                target_bnb=max_funds / 1e18,
+            )
+        except Exception as exc:
+            logger.warning("FourMemeReader.read failed for %s: %s", token_address, exc)
             return None
-        # Example shape once ABI is wired in:
-        # contract = w3.eth.contract(address=curve_address, abi=self.CURVE_ABI)
-        # raised = contract.functions.raisedBNB(token_address).call() / 1e18
-        # target = contract.functions.targetBNB().call() / 1e18
-        # progress = min(100.0, (raised / target) * 100) if target else 0.0
-        # return BondingStatus(self.platform_name, progress, progress < 100, raised, target)
-        return None
 
 
 class GraFunReader(BondingReader):
-    """Same pattern as FourMemeReader — fill in GraFun's verified curve ABI."""
+    """
+    GraFun's "Token Sale Factory" contract address IS verified now —
+    `0x8341b19a2A602eAE0f22633b6da12E1B016E6451` on BSC, confirmed via
+    DefiLlama's own dimension-adapters source (dexs/grafun.ts), which
+    hardcodes it for their own fee/volume tracking — a source with no
+    reason to get it wrong. What's still unconfirmed is a bonding-progress
+    read function on that contract: DefiLlama's adapter only needed the
+    `Swap(address indexed token, address indexed referrer, address
+    indexed account, bool isBuy, uint256 bnbAmount, uint256 tokenAmount,
+    uint256 fee, uint256 reserved)` event (for volume), which doesn't by
+    itself expose a maxFunds-style target to compute progress against —
+    same open item as before, just narrowed: find GraFun's equivalent of
+    four.meme's `getTokenInfo` (a getter that returns funds raised vs.
+    target), most likely on this same contract. Check its BscScan page for
+    verified source once BscScan is reachable from wherever you're
+    running this, or search for other open-source GraFun integrations the
+    way app/services/four_meme.py's docstring found four.meme's.
+    """
 
     platform_name = "grafun"
     CURVE_ABI: list = []
 
     def read(self, w3: Web3, token_address: str) -> Optional[BondingStatus]:
         if not self.CURVE_ABI:
-            logger.debug("GraFunReader: ABI not configured, skipping on-chain read")
+            logger.debug("GraFunReader: progress-read ABI not confirmed yet, skipping on-chain read")
             return None
         return None
 
