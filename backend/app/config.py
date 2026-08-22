@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     bonding_refresh_interval: int = 45
     stale_token_cleanup_hours: int = 72
 
+    # scan_runner.py ($0/month path): a bonding-curve token whose progress
+    # hasn't advanced past its previous high-water mark for this many
+    # minutes gets pruned from the feed — presumed dead (no buys
+    # happening). Migrated tokens are never pruned by this; only ones
+    # stuck mid-curve.
+    dead_bonding_minutes: int = 30
+
     # scan_runner.py loop tuning — see .github/workflows/scanner.yml
     scan_poll_interval_seconds: int = 15
     scan_loop_budget_seconds: int = 20_700  # 5h45m; leaves a safety margin
