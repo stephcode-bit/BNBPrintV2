@@ -56,9 +56,18 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // Token records never actually carry a "created_at" field (that was a
+  // legacy Postgres column) — only "creation_timestamp". Left unaliased,
+  // sorting by the default "created_at" compared every token as equal
+  // (undefined ?? 0 for both sides) and silently fell back to raw storage
+  // order, which is oldest-first — the exact opposite of the "Newest"
+  // sort the UI claims to apply, and why long-dead tokens were showing up
+  // at the top of the default view.
+  const effectiveSortBy = sortBy === "created_at" ? "creation_timestamp" : sortBy;
+
   items = [...items].sort((a, b) => {
-    const av = a[sortBy] ?? 0;
-    const bv = b[sortBy] ?? 0;
+    const av = a[effectiveSortBy] ?? 0;
+    const bv = b[effectiveSortBy] ?? 0;
     const cmp = typeof av === "string" ? av.localeCompare(bv) : av - bv;
     return order === "desc" ? -cmp : cmp;
   });
