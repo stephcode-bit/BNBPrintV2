@@ -127,6 +127,25 @@ async def process_token_pipeline(token: dict) -> dict:
     if platform:
         bonding_status = bonding.read_bonding_status(w3, platform, address)
 
+    # creation_timestamp may be a live datetime (freshly discovered this
+    # run) or a plain string (a resumed token whose prior JSON round-trip
+    # through Upstash turned it to text — see scan_runner.py's _as_datetime
+    # for the same issue on the stats side). Without normalizing here,
+    # `datetime.now() - <string>` raises a TypeError that _refresh_bonding
+    # silently swallows, which means a resumed token's bonding progress —
+    # and dead-token staleness tracking — never updates again after its
+    # first save. That's why previously-stuck tokens stayed stuck forever.
+    _created = token["creation_timestamp"]
+    if isinstance(_created, str):
+        for _candidate in (_created, _created.replace("Z", "+00:00")):
+            try:
+                _created = datetime.fromisoformat(_candidate)
+                break
+            except ValueError:
+                continue
+        else:
+            _created = datetime.now(timezone.utc)
+
     liquidity_usd = token.get("liquidity_usd") or (
         random.uniform(500, 60_000) if settings.demo_mode else 0.0
     )
@@ -143,7 +162,7 @@ async def process_token_pipeline(token: dict) -> dict:
     )
     age_minutes = max(
         0.1,
-        (datetime.now(timezone.utc) - token["creation_timestamp"]).total_seconds() / 60,
+        (datetime.now(timezone.utc) - _created).total_seconds() / 60,
     )
 
     # Merge the three signal sources with a clear priority: GoPlus (a real,
@@ -189,6 +208,7 @@ async def process_token_pipeline(token: dict) -> dict:
 
     return {
         **token,
+        "creation_timestamp": _created,  # normalized above — always a real datetime from here on
         "liquidity_usd": liquidity_usd,
         "liquidity_locked": inputs.liquidity_locked,
         "market_cap_usd": market_cap,
