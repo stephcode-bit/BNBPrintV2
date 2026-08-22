@@ -192,6 +192,60 @@ def _compute_stats(known: dict[str, dict]) -> dict:
     }
 
 
+def _track_progress(enriched: dict, previous: "dict | None") -> dict:
+    """
+    Maintains two fields used to detect "dead" bonding-curve tokens — ones
+    stuck with no buys — so they can be pruned after DEAD_BONDING_MINUTES
+    of no forward movement:
+      progress_high_water_mark: the best bonding_progress % seen so far
+      progress_stale_since: when that high-water mark was last set (i.e.
+        the last time progress actually moved forward)
+
+    Progress on a bonding curve only ever goes up (more BNB raised), so
+    "not progressing" is unambiguous: no new high-water mark. A small
+    epsilon avoids float noise from re-reading the same on-chain state
+    resetting the clock. Once a token migrates (is_bonding flips False)
+    these fields stop being consulted — migrated is a success case, never
+    pruned by _prune_dead_bonding.
+    """
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    current_progress = enriched.get("bonding_progress") or 0.0
+    prev_high = (previous or {}).get("progress_high_water_mark")
+    prev_stale_since = (previous or {}).get("progress_stale_since")
+
+    if prev_high is None or current_progress > prev_high + 0.01:
+        enriched["progress_high_water_mark"] = current_progress
+        enriched["progress_stale_since"] = now
+    else:
+        enriched["progress_high_water_mark"] = prev_high
+        enriched["progress_stale_since"] = prev_stale_since
+
+    return enriched
+
+
+def _prune_dead_bonding(known: dict[str, dict]) -> int:
+    """Removes bonding-curve tokens whose progress hasn't beaten its own
+    high-water mark in DEAD_BONDING_MINUTES — see _track_progress. Migrated
+    tokens (is_bonding=False) are never touched here. Returns the number
+    removed, purely for logging."""
+    from datetime import datetime, timedelta, timezone
+
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=settings.dead_bonding_minutes)
+    dead = []
+    for address, t in known.items():
+        if not t.get("is_bonding"):
+            continue
+        stale_since = _as_datetime(t.get("progress_stale_since"))
+        if stale_since and stale_since <= cutoff:
+            dead.append(address)
+
+    for address in dead:
+        del known[address]
+    return len(dead)
+
+
 async def _handle_discovered(raw: dict, known: dict[str, dict], notified: set[str]) -> None:
     try:
         enriched = await process_token_pipeline(raw)
@@ -200,7 +254,9 @@ async def _handle_discovered(raw: dict, known: dict[str, dict], notified: set[st
         return
 
     address = enriched["address"]
-    was_runner = known.get(address, {}).get("is_runner", False)
+    previous = known.get(address)
+    was_runner = previous.get("is_runner", False) if previous else False
+    enriched = _track_progress(enriched, previous)
     known[address] = enriched
 
     alert_type = "runner" if enriched["is_runner"] else "new_token"
@@ -241,6 +297,7 @@ async def _refresh_bonding(known: dict[str, dict]) -> None:
         except Exception:
             logger.exception("refresh failed for %s", address)
             continue
+        enriched = _track_progress(enriched, row)
         known[address] = enriched
 
 
@@ -285,6 +342,13 @@ async def main() -> None:
             if cycle_start - last_refresh >= settings.bonding_refresh_interval:
                 await _refresh_bonding(known)
                 last_refresh = cycle_start
+
+            pruned = _prune_dead_bonding(known)
+            if pruned:
+                logger.info(
+                    "pruned %d dead bonding-curve token(s) — no progress in %dmin",
+                    pruned, settings.dead_bonding_minutes,
+                )
 
             await store.save_snapshot(list(known.values()))
             await store.save_stats(_compute_stats(known))
