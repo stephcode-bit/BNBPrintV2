@@ -144,6 +144,27 @@ async def _live_tick() -> list[dict]:
     return discovered
 
 
+def _as_datetime(ts):
+    """Normalizes a creation_timestamp that may be a live datetime object
+    (tokens discovered this run) or a string (tokens resumed from a prior
+    Upstash snapshot, where json.dumps(..., default=str) turned datetimes
+    into plain strings) into a single comparable datetime — or None if it
+    can't be parsed. Without this, mixing the two types in one max()/>=
+    comparison raises a TypeError and crashes the whole scan loop once a
+    run has both resumed and freshly-discovered tokens in memory."""
+    from datetime import datetime
+
+    if isinstance(ts, datetime):
+        return ts
+    if isinstance(ts, str) and ts:
+        for candidate in (ts, ts.replace("Z", "+00:00")):
+            try:
+                return datetime.fromisoformat(candidate)
+            except ValueError:
+                continue
+    return None
+
+
 def _compute_stats(known: dict[str, dict]) -> dict:
     from datetime import datetime, timedelta, timezone
 
@@ -153,17 +174,13 @@ def _compute_stats(known: dict[str, dict]) -> dict:
     since = datetime.now(timezone.utc) - timedelta(hours=24)
 
     def _created_recently(t: dict) -> bool:
-        ts = t.get("creation_timestamp")
-        if isinstance(ts, str):
-            try:
-                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            except ValueError:
-                return False
+        ts = _as_datetime(t.get("creation_timestamp"))
         return bool(ts and ts >= since)
 
     runners_24h = sum(1 for t in tokens if t.get("is_runner") and _created_recently(t))
-    avg_security = sum(t.get("security_score", 0) for t in tokens) / total if total else 0.0
-    last_token_at = max((t.get("creation_timestamp") for t in tokens), default=None)
+    avg_security = sum((t.get("security_score") or 0) for t in tokens) / total if total else 0.0
+    normalized_dates = [d for d in (_as_datetime(t.get("creation_timestamp")) for t in tokens) if d is not None]
+    last_token_at = max(normalized_dates, default=None)
 
     return {
         "total_tokens": total,
@@ -259,17 +276,26 @@ async def main() -> None:
     while time.monotonic() - start < settings.scan_loop_budget_seconds:
         cycle_start = time.monotonic()
 
-        new_raws = await (_demo_tick() if settings.demo_mode else _live_tick())
-        for raw in new_raws:
-            if raw["address"] not in known:
-                await _handle_discovered(raw, known, notified)
+        try:
+            new_raws = await (_demo_tick() if settings.demo_mode else _live_tick())
+            for raw in new_raws:
+                if raw["address"] not in known:
+                    await _handle_discovered(raw, known, notified)
 
-        if cycle_start - last_refresh >= settings.bonding_refresh_interval:
-            await _refresh_bonding(known)
-            last_refresh = cycle_start
+            if cycle_start - last_refresh >= settings.bonding_refresh_interval:
+                await _refresh_bonding(known)
+                last_refresh = cycle_start
 
-        await store.save_snapshot(list(known.values()))
-        await store.save_stats(_compute_stats(known))
+            await store.save_snapshot(list(known.values()))
+            await store.save_stats(_compute_stats(known))
+        except Exception:
+            # Belt-and-suspenders: any bug in one cycle (an unexpected data
+            # shape, a transient failure we didn't anticipate, etc.) logs
+            # and moves on to the next tick instead of exiting the whole
+            # process — a hard crash here wastes the rest of this run's
+            # multi-hour budget until the next scheduled restart picks up,
+            # which is a much worse outcome than one skipped cycle.
+            logger.exception("scan cycle failed unexpectedly — continuing to next tick")
 
         elapsed = time.monotonic() - cycle_start
         await asyncio.sleep(max(1.0, settings.scan_poll_interval_seconds - elapsed))
