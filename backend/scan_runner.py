@@ -113,6 +113,25 @@ async def _live_tick() -> list[dict]:
             events = contract.events.TokenCreate().get_logs(from_block=from_block + 1, to_block=latest)
             for ev in events:
                 args = ev["args"]
+                # Defensive sanity check: a token detected via a live
+                # TokenCreate event right now should never have a launch
+                # time from years ago (four.meme's V2 contract is recent).
+                # If launchTime ever comes back implausible — 0, corrupted,
+                # or otherwise outside a sane window — fall back to "now"
+                # rather than storing (and later displaying) a bogus age
+                # like "57 years old". Logged so it's visible if it fires.
+                try:
+                    launch_ts = datetime.fromtimestamp(args["launchTime"], tz=timezone.utc)
+                except (OSError, OverflowError, ValueError):
+                    launch_ts = None
+                now = datetime.now(timezone.utc)
+                sane_floor = datetime(2024, 1, 1, tzinfo=timezone.utc)
+                if launch_ts is None or launch_ts < sane_floor or launch_ts > now:
+                    logger.warning(
+                        "live poll: implausible launchTime=%r for token %s — using now() instead",
+                        args.get("launchTime"), args["token"],
+                    )
+                    launch_ts = now
                 discovered.append({
                     "address": args["token"],
                     "symbol": args["symbol"][:32] if args["symbol"] else "",
@@ -123,7 +142,7 @@ async def _live_tick() -> list[dict]:
                     "dex": None,
                     "bonding_platform": "four.meme",
                     "creation_block": ev["blockNumber"],
-                    "creation_timestamp": datetime.fromtimestamp(args["launchTime"], tz=timezone.utc),
+                    "creation_timestamp": launch_ts,
                 })
             if events:
                 logger.info("live poll: %d new four.meme token(s) decoded", len(events))
@@ -215,12 +234,22 @@ def _track_progress(enriched: dict, previous: "dict | None") -> dict:
     prev_high = (previous or {}).get("progress_high_water_mark")
     prev_stale_since = (previous or {}).get("progress_stale_since")
 
-    if prev_high is None or current_progress > prev_high + 0.01:
+    if prev_high is not None and current_progress > prev_high + 0.01:
         enriched["progress_high_water_mark"] = current_progress
         enriched["progress_stale_since"] = now
-    else:
+    elif prev_high is not None:
         enriched["progress_high_water_mark"] = prev_high
         enriched["progress_stale_since"] = prev_stale_since
+    else:
+        # First time tracking this token — either brand new, or an older
+        # entry saved before this feature existed. Anchor the clock to
+        # when the token was actually created, not to "now": otherwise a
+        # token that's already been sitting dead for hours would get a
+        # fresh 30-minute grace period the instant this code first runs,
+        # instead of being recognized as already stale and pruned promptly.
+        creation = _as_datetime(enriched.get("creation_timestamp")) or now
+        enriched["progress_high_water_mark"] = current_progress
+        enriched["progress_stale_since"] = creation
 
     return enriched
 
