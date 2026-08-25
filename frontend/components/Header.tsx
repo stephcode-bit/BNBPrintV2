@@ -9,8 +9,10 @@ import { useTokenStream } from "@/lib/ws";
 
 const NAV = [
   { href: "/", label: "Dashboard" },
+  { href: "/active", label: "Active" },
   { href: "/bookmarks", label: "Watchlist" },
   { href: "/about", label: "About" },
+  { href: "/migrated", label: "Migrated" },
 ];
 
 export default function Header() {
