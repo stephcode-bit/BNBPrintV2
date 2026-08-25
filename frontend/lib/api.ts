@@ -24,6 +24,8 @@ export function buildTokenQuery(filters: TokenFilters): string {
   if (filters.platform) params.set("platform", filters.platform);
   if (filters.min_security_score !== undefined)
     params.set("min_security_score", String(filters.min_security_score));
+  if (filters.min_holder_count !== undefined)
+    params.set("min_holder_count", String(filters.min_holder_count));
   if (filters.runners_only) params.set("runners_only", "true");
   if (filters.search) params.set("search", filters.search);
   if (filters.sort_by) params.set("sort_by", filters.sort_by);
