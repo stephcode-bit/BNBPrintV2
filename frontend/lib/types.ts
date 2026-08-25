@@ -15,6 +15,11 @@ export interface Token {
   bonding_progress: number;
   is_bonding: boolean;
   migrated_at: string | null;
+  // $0/month path only (scan_runner.py) — used to prune bonding tokens
+  // with no forward progress in DEAD_BONDING_HOURS; not written by the
+  // legacy always-on path, so treat as optional.
+  progress_high_water_mark?: number;
+  progress_stale_since?: string | null;
 
   liquidity_usd: number;
   liquidity_locked: boolean;
@@ -75,6 +80,7 @@ export interface TokenFilters {
   bonding?: boolean;
   platform?: string;
   min_security_score?: number;
+  min_holder_count?: number;
   runners_only?: boolean;
   search?: string;
   sort_by?: string;
