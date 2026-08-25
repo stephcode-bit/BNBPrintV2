@@ -54,14 +54,32 @@ class OnChainSecurity:
 
 
 def get_web3() -> Optional[Web3]:
-    if not settings.rpc_https_url:
-        return None
-    try:
-        w3 = Web3(Web3.HTTPProvider(settings.rpc_https_url, request_kwargs={"timeout": 8}))
-        return w3 if w3.is_connected() else None
-    except Exception as exc:
-        logger.warning("RPC connection failed: %s", exc)
-        return None
+    """
+    Tries settings.rpc_https_url first, then settings.rpc_https_url_fallback
+    if that one is unreachable. This covers both a provider outage and a
+    free-tier request-limit being hit mid-month — either way the primary
+    stops responding to even a cheap is_connected() check, so the same
+    fallback logic handles both without needing to tell them apart. Called
+    fresh on every use (scan_runner.py's _live_tick() calls this once per
+    ~15s poll), so a primary that recovers later gets picked up again
+    automatically — no restart needed. Returns None only if neither URL is
+    configured or both fail.
+    """
+    candidates = [
+        ("primary", settings.rpc_https_url),
+        ("fallback", settings.rpc_https_url_fallback),
+    ]
+    for label, url in candidates:
+        if not url:
+            continue
+        try:
+            w3 = Web3(Web3.HTTPProvider(url, request_kwargs={"timeout": 8}))
+            if w3.is_connected():
+                return w3
+            logger.warning("RPC %s provider did not respond to connectivity check", label)
+        except Exception as exc:
+            logger.warning("RPC %s provider connection failed: %s", label, exc)
+    return None
 
 
 def check_owner_renounced(w3: Web3, token_address: str) -> tuple[Optional[str], bool]:
