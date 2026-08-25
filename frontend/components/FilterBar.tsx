@@ -23,9 +23,14 @@ const SORTS: { value: string; label: string }[] = [
 export default function FilterBar({
   filters,
   onChange,
+  lockBonding,
 }: {
   filters: TokenFilters;
   onChange: (next: TokenFilters) => void;
+  // Set by pages that already fix bonding/migrated state via their tab
+  // (Dashboard, Active, Migrated) — hides the now-redundant "Still
+  // bonding"/"Migrated" toggle so it can't fight with the tab you're on.
+  lockBonding?: boolean;
 }) {
   function set<K extends keyof TokenFilters>(key: K, value: TokenFilters[K]) {
     onChange({ ...filters, [key]: value, offset: 0 });
@@ -72,20 +77,24 @@ export default function FilterBar({
       <div className="flex flex-wrap items-center gap-2">
         <SlidersHorizontal size={14} className="text-bnb-muted mr-0.5" />
 
-        <Toggle
-          active={filters.bonding === true}
-          onClick={() => set("bonding", filters.bonding === true ? undefined : true)}
-          label="Still bonding"
-        />
-        <Toggle
-          active={filters.bonding === false}
-          onClick={() => set("bonding", filters.bonding === false ? undefined : false)}
-          label="Migrated"
-        />
+        {!lockBonding && (
+          <>
+            <Toggle
+              active={filters.bonding === true}
+              onClick={() => set("bonding", filters.bonding === true ? undefined : true)}
+              label="Still bonding"
+            />
+            <Toggle
+              active={filters.bonding === false}
+              onClick={() => set("bonding", filters.bonding === false ? undefined : false)}
+              label="Migrated"
+            />
+          </>
+        )}
         <Toggle
           active={!!filters.runners_only}
           onClick={() => set("runners_only", !filters.runners_only)}
-          label="🔥 Runners only"
+          label="Runners only"
         />
         <Toggle
           active={filters.min_security_score === 70}
