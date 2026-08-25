@@ -35,6 +35,7 @@ export async function GET(req: NextRequest) {
   const bonding = params.get("bonding");
   const platform = params.get("platform");
   const minSecurity = params.get("min_security_score");
+  const minHolderCount = params.get("min_holder_count");
   const runnersOnly = params.get("runners_only") === "true";
   const search = params.get("search")?.toLowerCase();
   const sortBy = (params.get("sort_by") as SortKey) || "created_at";
@@ -46,6 +47,10 @@ export async function GET(req: NextRequest) {
   if (bonding !== null) items = items.filter((t) => t.is_bonding === (bonding === "true"));
   if (platform) items = items.filter((t) => t.bonding_platform === platform);
   if (minSecurity) items = items.filter((t) => (t.security_score ?? 0) >= Number(minSecurity));
+  // "Active" tab: still-bonding tokens with real buyers in, not just the
+  // creator wallet. min_holder_count is an inclusive floor (>=), same
+  // convention as min_security_score above.
+  if (minHolderCount) items = items.filter((t) => (t.holder_count ?? 0) >= Number(minHolderCount));
   if (runnersOnly) items = items.filter((t) => t.is_runner);
   if (search) {
     items = items.filter(
