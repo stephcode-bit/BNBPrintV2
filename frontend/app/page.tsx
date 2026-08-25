@@ -7,7 +7,11 @@ import LiveFeed from "@/components/LiveFeed";
 import type { TokenFilters } from "@/lib/types";
 
 export default function DashboardPage() {
+  // Dashboard is the "still bonding" feed only — once a token migrates it
+  // moves to the dedicated Migrated tab instead (see app/migrated/page.tsx)
+  // rather than lingering here alongside fresh launches.
   const [filters, setFilters] = useState<TokenFilters>({
+    bonding: true,
     sort_by: "created_at",
     order: "desc",
     limit: 60,
@@ -23,12 +27,12 @@ export default function DashboardPage() {
         <p className="text-sm text-bnb-muted mt-1 max-w-2xl">
           Live-scanning BNB Chain bonding-curve launches — four.meme, GraFun, and PancakeSwap — flagging
           likely runners before they finish bonding, and screening every token for honeypots, rugs, and
-          thin liquidity.
+          thin liquidity. Tokens that finish bonding move to the Migrated tab.
         </p>
       </div>
 
       <StatsBar />
-      <FilterBar filters={filters} onChange={setFilters} />
+      <FilterBar filters={filters} onChange={setFilters} lockBonding />
       <LiveFeed filters={filters} />
     </div>
   );
