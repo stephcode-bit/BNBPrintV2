@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     # Chain
     rpc_wss_url: str = ""
     rpc_https_url: str = ""
+    # Optional second HTTPS RPC endpoint, tried automatically whenever the
+    # primary one is unreachable or has hit its free-tier request limit —
+    # see app/services/security_checks.py's get_web3(). Leave blank to run
+    # with just the primary (the original single-provider behavior).
+    rpc_https_url_fallback: str = ""
     chain_id: int = 56
 
     # Ave AI
