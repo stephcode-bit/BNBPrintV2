@@ -14,6 +14,7 @@ name: BNBPRINT Scanner
 # Required repo secrets (Settings -> Secrets and variables -> Actions):
 #   UPSTASH_REDIS_REST_URL, UPSTASH_REDIS_REST_TOKEN   (from upstash.com, free)
 #   RPC_HTTPS_URL                                       (only needed once DEMO_MODE=false)
+#   RPC_HTTPS_URL_FALLBACK                              (optional — used automatically if RPC_HTTPS_URL is down or rate-limited)
 #   VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY                 (optional — enables push)
 #   GOPLUS_APP_KEY, GOPLUS_APP_SECRET                   (optional — higher rate limit)
 # See backend/.env.example for the full list and how to get each one.
@@ -50,6 +51,7 @@ jobs:
         env:
           DEMO_MODE: ${{ vars.DEMO_MODE || 'true' }}
           RPC_HTTPS_URL: ${{ secrets.RPC_HTTPS_URL }}
+          RPC_HTTPS_URL_FALLBACK: ${{ secrets.RPC_HTTPS_URL_FALLBACK }}
           CHAIN_ID: "56"
           FOUR_MEME_FACTORY: ${{ vars.FOUR_MEME_FACTORY || '0x5c952063c7fc8610FFDB798152D69F0B9550762b' }}
           GRAFUN_FACTORY: ${{ vars.GRAFUN_FACTORY || '0x8341b19a2A602eAE0f22633b6da12E1B016E6451' }}
